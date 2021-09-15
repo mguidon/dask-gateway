@@ -1,0 +1,11 @@
+--constraint ./_constraints.txt
+
+aiodocker
+cryptography
+dask[complete]
+dask-gateway
+docker
+jupyterlab
+tornado
+traitlets
+sqlalchemy

@@ -1,0 +1,21 @@
+version: '2.3' # Don't touch
+services:
+  dask-gateway-server-osparc:
+    image: local/dask-gateway-server-osparc:${BUILD_TARGET:?build_target_required}
+    ports:
+      - "8001:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./sample.py:/home/scu/sample.py
+    networks:
+      - dask_net
+
+networks:
+  dask_net:
+    driver: bridge
+    attachable: true
+    internal: false
+    ipam:
+      driver: default
+      config:
+        - subnet: "172.9.0.0/16"
