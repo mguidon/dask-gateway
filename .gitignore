@@ -1,4 +1,3 @@
-values.schema.json
 docs/build/
 .coverage
 htmlcov/
@@ -9,3 +8,6 @@ htmlcov/
 .pytest_cache/
 .DS_Store
 .vscode
+go/
+.venv
+.ipynb_checkpoints
