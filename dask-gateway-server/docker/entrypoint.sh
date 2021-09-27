@@ -57,11 +57,11 @@ then
         echo "changing $SC_USER_NAME:$SC_USER_NAME ($SC_USER_ID:$SC_USER_ID) to $SC_USER_NAME:$CONT_GROUPNAME ($HOST_USERID:$HOST_GROUPID)"
         usermod --uid "$HOST_USERID" --gid "$HOST_GROUPID" "$SC_USER_NAME"
 
-        # echo "Changing group properties of files around from $SC_USER_ID to group $CONT_GROUPNAME"
-        # find / -path /proc -prune -o -group "$SC_USER_ID" -exec chgrp --no-dereference "$CONT_GROUPNAME" {} \;
-        # # change user property of files already around
-        # echo "Changing ownership properties of files around from $SC_USER_ID to group $CONT_GROUPNAME"
-        # find / -path /proc -prune -o -user "$SC_USER_ID" -exec chown --no-dereference "$SC_USER_NAME" {} \;
+        echo "Changing group properties of files around from $SC_USER_ID to group $CONT_GROUPNAME"
+        find / -path /proc -prune -o -group "$SC_USER_ID" -exec chgrp --no-dereference "$CONT_GROUPNAME" {} \;
+        # change user property of files already around
+        echo "Changing ownership properties of files around from $SC_USER_ID to group $CONT_GROUPNAME"
+        find / -path /proc -prune -o -user "$SC_USER_ID" -exec chown --no-dereference "$SC_USER_NAME" {} \;
     fi
 fi
 
@@ -82,8 +82,12 @@ then
     adduser "$SC_USER_NAME" "$GROUPNAME"
 fi
 
+echo "$INFO ensuring write rights on folders ..."
+chown -R $USERNAME:"$GROUPNAME" "${GATEWAY_WORK_FOLDER}"
+
 echo "$INFO Starting gateway ..."
 echo "  $SC_USER_NAME rights    : $(id "$SC_USER_NAME")"
 echo "  local dir : $(ls -al)"
+echo "  GATEWAY_WORK_FOLDER dir : $(ls -al ${GATEWAY_WORK_FOLDER} )"
 
 exec gosu "$SC_USER_NAME" "$@"

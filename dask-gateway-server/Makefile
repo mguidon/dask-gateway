@@ -28,7 +28,7 @@ devenv: $(VENV_DIR) ## builds development environment
 	@$</bin/pip install pre-commit
 	@$</bin/pre-commit install
 	# Installing repo packages
-	@$</bin/pip install -r $(makefile_dir)/dask-gateway-server/requirements/dev.txt
+	@$</bin/pip install -r $(makefile_dir)/requirements/dev.txt
 	# Installed packages in $<
 	@$</bin/pip list
 

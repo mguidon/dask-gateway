@@ -10,6 +10,7 @@ RUN set -eux \
   iputils-ping \
   curl \
   gosu \
+  procps \ 
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/* \
   # verify that the binary works
@@ -71,6 +72,7 @@ RUN pip --no-cache-dir install --upgrade \
   wheel \
   setuptools
 
+RUN ls
 # copy dask-gateway-server and dependencies
 COPY --chown=scu:scu dask-gateway-server /build/services/dask-gateway-server
 

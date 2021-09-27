@@ -1207,17 +1207,22 @@ class DBBackendBase(Backend):
                 await self._check_cluster_scale(cluster)
 
     async def reconcile_worker(self, worker):
+        self.log.warn("Reconcile: %s --> %s", worker.status, worker.target)
         if worker.status >= JobStatus.STOPPED:
             return
-
         if worker.target == JobStatus.CLOSING:
             if worker.status != JobStatus.CLOSING:
+                self.log.warn("---->Reconcile: update_worker CLOSING")
+                
                 self.db.update_worker(worker, status=JobStatus.CLOSING)
             if self.is_cluster_ready_to_close(worker.cluster):
+                self.log.warn("---->Reconcile: put")
                 self.queue.put(worker.cluster)
             return
 
         if worker.target in (JobStatus.STOPPED, JobStatus.FAILED):
+            self.log.warn("---->Reconcile: worker_to_stopped")
+
             await self._worker_to_stopped(worker)
             if self.is_cluster_ready_to_close(worker.cluster):
                 self.queue.put(worker.cluster)
@@ -1228,6 +1233,7 @@ class DBBackendBase(Backend):
             return
 
         if worker.status == JobStatus.CREATED and worker.target == JobStatus.RUNNING:
+            self.log.warn("---->Reconcile: _worker_to_submitted")
             await self._worker_to_submitted(worker)
             return
 
@@ -1386,7 +1392,7 @@ class DBBackendBase(Backend):
         # Set values that dask-gateway needs to run
         out.update(
             {
-                "DASK_GATEWAY_API_URL": self.api_url,
+                "DASK_GATEWAY_API_URL":  self.api_url,
                 "DASK_GATEWAY_API_TOKEN": cluster.token,
                 "DASK_GATEWAY_CLUSTER_NAME": cluster.name,
                 "DASK_DISTRIBUTED__COMM__REQUIRE_ENCRYPTION": "True",
@@ -1425,11 +1431,11 @@ class DBBackendBase(Backend):
             "--protocol",
             "tls",
             "--port",
-            "0",
+            "8786",
             "--host",
             self.default_host,
             "--dashboard-address",
-            f"{self.default_host}:0",
+            f"{self.default_host}:8787",
             "--preload",
             "dask_gateway.scheduler_preload",
             "--dg-api-address",

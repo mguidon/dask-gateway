@@ -1,5 +1,4 @@
 import asyncio
-import enum
 import errno
 import functools
 import grp
@@ -9,18 +8,17 @@ import shutil
 import signal
 import sys
 import tempfile
-from urllib.parse import urlparse
+
+from traitlets import List, Unicode, Integer
+
+from .base import ClusterConfig
+from .db_base import DBBackendBase
+from ..traitlets import Type
 
 from aiodocker import Docker
 from aiodocker.containers import DockerContainer
 from aiodocker.exceptions import DockerContainerError, DockerError
-from traitlets import Integer, List, Unicode
-import docker
 
-
-from ..traitlets import Command, Type
-from .base import ClusterConfig
-from .db_base import DBBackendBase
 
 __all__ = ("OsparcClusterConfig", "OsparcBackend", "UnsafeOsparcBackend")
 
@@ -28,11 +26,7 @@ __all__ = ("OsparcClusterConfig", "OsparcBackend", "UnsafeOsparcBackend")
 class OsparcClusterConfig(ClusterConfig):
     """Dask cluster configuration options when running as osparc processes"""
 
-    # worker_cmd = Command(
-    #     "docker run -d local/dask-sidecar:production", help="Shell command to start a dask worker.", config=True
-    # )
     pass
-
 
 
 def _signal(pid, sig):
@@ -144,8 +138,8 @@ class OsparcBackend(DBBackendBase):
         config=True,
     )
 
-    default_host = "127.0.0.1"
-
+    #default_host = "dask-gateway-server-osparc"
+    default_host = "172.16.8.64"
     containers = {}
 
     def set_file_permissions(self, paths, username):
@@ -180,7 +174,7 @@ class OsparcBackend(DBBackendBase):
         certsdir = self.get_certs_directory(workdir)
         logsdir = self.get_logs_directory(workdir)
 
-        paths = [workdir, certsdir, logsdir, os.path.join(workdir, "input"), os.path.join(workdir, "output"), os.path.join(workdir, "log")]
+        paths = [workdir, certsdir, logsdir]
         for path in paths:
             os.makedirs(path, 0o700, exist_ok=True)
 
@@ -226,7 +220,7 @@ class OsparcBackend(DBBackendBase):
         for key in self.inherited_environment:
             if key in os.environ:
                 env[key] = os.environ[key]
-        env["USER"] = cluster.username
+        # env["USER"] = cluster.username
         return env
 
     async def start_process(self, cluster, cmd, env, name):
@@ -270,8 +264,7 @@ class OsparcBackend(DBBackendBase):
     async def do_start_cluster(self, cluster):
         workdir = self.setup_working_directory(cluster)
         yield {"workdir": workdir}
-        print( self.get_scheduler_command(cluster))
-        print(self.get_scheduler_env(cluster))
+
         pid = await self.start_process(
             cluster,
             self.get_scheduler_command(cluster),
@@ -293,78 +286,81 @@ class OsparcBackend(DBBackendBase):
         pid = o.state.get("pid")
         return pid is not None and is_running(pid)
 
-    async def _check_container_status(self, o):
-        container_id = o.state.get("container_id")
-        if container_id:
-            try:
-                async with Docker() as docker_client:
-                    container = await docker_client.containers.get(container_id)
-                    container_data = await container.show()
-                    return container_data["State"]["Running"]
-            except DockerContainerError:
-                self.log.exception(
-                    "Error while checking container with id %s",
-                    container_id
-                )
-        
-        return False
-
-    async def _stop_container(self, container_id):
-        try:
-            async with Docker() as docker_client:
-                container = await docker_client.containers.get(container_id)
-                await container.stop()
-        except DockerContainerError:
-            self.log.exception(
-                "Error while stopping container with id %s",
-                container_id
-            )
-
-
     async def do_check_clusters(self, clusters):
         return [self._check_status(c) for c in clusters]
 
     async def do_start_worker(self, worker):
         cmd = self.get_worker_command(worker.cluster, worker.name)
-        print("+++++++++", cmd)
-        docker_image = "local/dask-sidecar:production"
+        env = self.get_worker_env(worker.cluster)
+        # pid = await self.start_process(
+        #     worker.cluster, cmd, env, "worker-%s" % worker.name
+        # )
+        # yield {"pid": pid}
+
+        scheduler_address = f"tls://{self.default_host}:8786"
+        db_address = f"{self.default_host}:8787"
         workdir = worker.cluster.state.get("workdir")
-        url = urlparse(worker.cluster.scheduler_address)
-        env_vars = [f"DASK_SCHEDULER_ADDRESS=172.17.0.1:{url.port}",
-                    f"DASK_DASHBOARD_ADDRESS={self.default_host}:0",
-                    f"DASK_WORKER_NAME={worker.name}",
-                    ]
-        print(env_vars)
-        return
+
+        self.log.warn("Workdir: %s", workdir)
+
+        env.update(
+            {
+                "DASK_SCHEDULER_ADDRESS": scheduler_address,
+                "DASK_DASHBOARD_ADDRESS": db_address,
+                "DASK_WORKER_NAME": f"{worker.name}",
+                "GATEWAY_WORK_FOLDER": f"{workdir}",
+            }
+        )
+        run_on_host = True
+        if run_on_host:
+            if "PATH" in env:
+                del env["PATH"]
+
+        docker_image = "local/dask-sidecar:production"
+        env_vars = [f"{key}={value}" for key, value in env.items()]
+        workdir = worker.cluster.state.get("workdir")
 
         container_config = {
             "Env": env_vars,
-            #"Cmd": "run",
+            # "Cmd": "run",
             "Image": docker_image,
             "HostConfig": {
                 "Init": True,
                 "AutoRemove": False,
                 "Binds": [
-                    # NOTE: the docker engine is mounted, so only named volumes are usable. Therefore for a selective
-                    # subfolder mount we need to get the path as seen from the host computer (see https://github.com/ITISFoundation/osparc-simcore/issues/1723)
                     f"{workdir}/input:/input",
                     f"{workdir}/output:/output",
                     f"{workdir}/log:/log",
+                    f"{workdir}:{workdir}",
                     "/var/run/docker.sock:/var/run/docker.sock",
                 ],
+                # "NetworkMode": "dask-gateway_dask_net",
             },
-        } 
+        }
         try:
             async with Docker() as docker_client:
+                for network_details in await docker_client.networks.list():
+                    n = network_details["Name"]
+                    self.log.warn(n)
+                    id = network_details["Id"]
+
                 container = await docker_client.containers.create(
                     config=container_config
-                    )
+                )
                 await container.start()
                 self.containers[container.id] = container
-                yield {"container_id": container.id}
-                while(True):
+                container_data = await container.show()
+                counter = 0
+                await asyncio.sleep(2)
+                while not container_data["State"]["Running"] and counter < 10:
                     await asyncio.sleep(2)
-                
+                    container_data = await container.show()
+                    counter + counter + 1
+
+                yield {"container_id": container.id}
+                # while True:
+                #     await asyncio.sleep(2)
+
         except DockerContainerError:
             self.log.exception(
                 "Error while running %s with parameters %s",
@@ -388,19 +384,49 @@ class OsparcBackend(DBBackendBase):
         # pid = await self.start_process(
         #     worker.cluster, cmd, env, "worker-%s" % worker.name
         # )
-        yield {"container_id": container.id}
+
+    async def _stop_container(self, container_id):
+        self.log.warn("Stoppoing container %s", container_id)
+        try:
+            async with Docker() as docker_client:
+                container = await docker_client.containers.get(container_id)
+                await container.stop()
+                await container.delete()
+            
+        except DockerContainerError:
+            self.log.exception(
+                "Error while stopping container with id %s", container_id
+            )
 
     async def do_stop_worker(self, worker):
         container_id = worker.state.get("container_id")
         if container_id is not None:
             await self._stop_container(container_id)
 
+    async def _check_container_status(self, o):
+        container_id = o.state.get("container_id")
+        if container_id:
+            try:
+                async with Docker() as docker_client:
+                    container = await docker_client.containers.get(container_id)
+                    container_data = await container.show()
+                    return container_data["State"]["Running"]
+            except DockerContainerError:
+                self.log.exception(
+                    "Error while checking container with id %s", container_id
+                )
+
+        return False
+
     async def do_check_workers(self, workers):
         ok = [False] * len(workers)
         for i, w in enumerate(workers):
             ok[i] = await self._check_container_status(w)
+            self.log.warn("Statussssssssssssssssssss %s", ok[i])
 
         return ok
+
+
 
 class UnsafeOsparcBackend(OsparcBackend):
     """A version of OsparcBackend that doesn't set permissions.

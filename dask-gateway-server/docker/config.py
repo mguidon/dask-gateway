@@ -133,6 +133,7 @@
 
 c.Backend.cluster_config_class = 'dask_gateway_server.backends.osparc.OsparcClusterConfig'
 c.DaskGateway.backend_class = 'dask_gateway_server.backends.osparc.UnsafeOsparcBackend'
+c.OsparcBackend.clusters_directory = '/tmp/gateway'
 # c.Backend.cluster_config_class = 'dask_gateway_server.backends.local.LocalClusterConfig'
 # c.DaskGateway.backend_class = 'dask_gateway_server.backends.local.UnsafeLocalBackend'
 c.Authenticator.password = 'asdf'
