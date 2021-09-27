@@ -8,6 +8,8 @@ import shutil
 import signal
 import sys
 import tempfile
+from urllib.parse import urlsplit, urlunsplit
+from sqlalchemy import schema
 
 from traitlets import List, Unicode, Integer
 
@@ -138,8 +140,9 @@ class OsparcBackend(DBBackendBase):
         config=True,
     )
 
-    default_host = "dask-gateway-server-osparc"
-    #default_host = "172.16.8.64"
+    # default_host = "dask-gateway-server-osparc"
+    default_host = "0.0.0.0"
+    # default_host = "172.16.8.64"
     containers = {}
 
     def set_file_permissions(self, paths, username):
@@ -265,6 +268,8 @@ class OsparcBackend(DBBackendBase):
         workdir = self.setup_working_directory(cluster)
         yield {"workdir": workdir}
 
+        self.log.warn(self.get_scheduler_command(cluster))
+        self.log.warn(self.get_scheduler_env(cluster))
         pid = await self.start_process(
             cluster,
             self.get_scheduler_command(cluster),
@@ -292,16 +297,25 @@ class OsparcBackend(DBBackendBase):
     async def do_start_worker(self, worker):
         cmd = self.get_worker_command(worker.cluster, worker.name)
         env = self.get_worker_env(worker.cluster)
-        # pid = await self.start_process(
-        #     worker.cluster, cmd, env, "worker-%s" % worker.name
-        # )
-        # yield {"pid": pid}
 
-        scheduler_address = worker.cluster.scheduler_address
+
+        run_on_host = False
+
+        if not run_on_host:
+            scheduler_url = urlsplit(worker.cluster.scheduler_address)
+            port = scheduler_url.netloc.split(":")[1]
+            netloc = "dask-gateway-server-osparc" + ":" + port
+
+            scheduler_address = urlunsplit(scheduler_url._replace(netloc=netloc))
+        else:
+            scheduler_address = worker.cluster.scheduler_address #urlsplit(worker.cluster.scheduler_address)
+            # scheduler_address =  urlunsplit(scheduler_url._replace(scheme="tcp"))
+
         db_address = f"{self.default_host}:8787"
         workdir = worker.cluster.state.get("workdir")
 
         self.log.warn("Workdir: %s", workdir)
+        self.log.warn("scheduler_address: %s", scheduler_address)
 
         env.update(
             {
@@ -311,7 +325,6 @@ class OsparcBackend(DBBackendBase):
                 "GATEWAY_WORK_FOLDER": f"{workdir}",
             }
         )
-        run_on_host = False
         if run_on_host:
             if "PATH" in env:
                 del env["PATH"]
@@ -320,44 +333,47 @@ class OsparcBackend(DBBackendBase):
         env_vars = [f"{key}={value}" for key, value in env.items()]
         workdir = worker.cluster.state.get("workdir")
 
-        container_config = {
-            "Env": env_vars,
-            "Image": docker_image,
-            "HostConfig": {
-                "Init": True,
-                "AutoRemove": False,
-                "Binds": [
-                    f"{workdir}/input:/input",
-                    f"{workdir}/output:/output",
-                    f"{workdir}/log:/log",
-                    f"{workdir}:{workdir}",
-                    "/var/run/docker.sock:/var/run/docker.sock",
-                ],
-                "NetworkMode": "dask-gateway_dask_net",
-            },
-        }
+        use_swarm = False
         try:
             async with Docker() as docker_client:
-                for network_details in await docker_client.networks.list():
-                    n = network_details["Name"]
-                    self.log.warn(n)
-                    id = network_details["Id"]
+                if not use_swarm:
+                    container_config = {
+                        "Env": env_vars,
+                        "Image": docker_image,
+                        "HostConfig": {
+                            "Init": True,
+                            "AutoRemove": False,
+                            "Binds": [
+                                f"{workdir}/input:/input",
+                                f"{workdir}/output:/output",
+                                f"{workdir}/log:/log",
+                                f"{workdir}:{workdir}",
+                                "/var/run/docker.sock:/var/run/docker.sock",
+                            ],
+                            "NetworkMode": "dask-gateway_dask_net" if not run_on_host else "",
+                        },
+                    }
 
-                container = await docker_client.containers.create(
-                    config=container_config
-                )
-                await container.start()
-                self.containers[container.id] = container
-                container_data = await container.show()
-                counter = 0
-                await asyncio.sleep(2)
-                while not container_data["State"]["Running"] and counter < 10:
-                    await asyncio.sleep(2)
+                    for network_details in await docker_client.networks.list():
+                        n = network_details["Name"]
+                        self.log.warn(n)
+                        id = network_details["Id"]
+
+                    container = await docker_client.containers.create(
+                        config=container_config
+                    )
+                    await container.start()
+                    self.containers[container.id] = container
                     container_data = await container.show()
-                    counter + counter + 1
+                    counter = 0
+                    await asyncio.sleep(2)
+                    while not container_data["State"]["Running"] and counter < 10:
+                        await asyncio.sleep(2)
+                        container_data = await container.show()
+                        counter + counter + 1
 
-                yield {"container_id": container.id}
-              
+                    yield {"container_id": container.id}
+
         except DockerContainerError:
             self.log.exception(
                 "Error while running %s with parameters %s",
@@ -376,7 +392,6 @@ class OsparcBackend(DBBackendBase):
             self.log.warning("Container run was cancelled")
             raise
 
-
     async def _stop_container(self, container_id):
         self.log.warn("Stoppoing container %s", container_id)
         try:
@@ -384,7 +399,7 @@ class OsparcBackend(DBBackendBase):
                 container = await docker_client.containers.get(container_id)
                 await container.stop()
                 await container.delete()
-            
+
         except DockerContainerError:
             self.log.exception(
                 "Error while stopping container with id %s", container_id
@@ -417,7 +432,6 @@ class OsparcBackend(DBBackendBase):
             self.log.warn("Statussssssssssssssssssss %s", ok[i])
 
         return ok
-
 
 
 class UnsafeOsparcBackend(OsparcBackend):

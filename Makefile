@@ -81,6 +81,20 @@ endif
 up up-devel: $(VENV_DIR) ## Builds production images and tags them as 'local/{service-name}:production'. For single target e.g. 'make target=webserver build'
 	$(eval COMPOSE_FILE := docker-compose$(if $(findstring -devel,$@),-devel.yml,.yml))
 	export BUILD_TARGET=$(if $(findstring -devel,$@),development,production) && docker-compose -f ${COMPOSE_FILE} up
+
+get_my_ip := $(shell hostname --all-ip-addresses | cut --delimiter=" " --fields=1)
+
+
+.PHONY: .init-swarm
+.init-swarm:
+	# Ensures swarm is initialized
+	$(if $(SWARM_HOSTS),,docker swarm init --advertise-addr=$(get_my_ip))
+
+up-swarm:  .init-swarm ## run as stack in swarm
+	export BUILD_TARGET=production && docker stack deploy --with-registry-auth -c docker-compose-swarm.yml dask-gateway
+
+leave-swarm:
+	docker swarm leave -f
 	
 .PHONY: help
 help: ## help on rule's targets

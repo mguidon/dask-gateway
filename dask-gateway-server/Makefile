@@ -81,6 +81,7 @@ endif
 up up-devel: $(VENV_DIR) ## Builds production images and tags them as 'local/{service-name}:production'. For single target e.g. 'make target=webserver build'
 	$(eval COMPOSE_FILE := docker-compose$(if $(findstring -devel,$@),-devel.yml,.yml))
 	export BUILD_TARGET=$(if $(findstring -devel,$@),development,production) && docker-compose -f ${COMPOSE_FILE} up
+
 	
 .PHONY: help
 help: ## help on rule's targets
