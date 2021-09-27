@@ -138,8 +138,8 @@ class OsparcBackend(DBBackendBase):
         config=True,
     )
 
-    #default_host = "dask-gateway-server-osparc"
-    default_host = "172.16.8.64"
+    default_host = "dask-gateway-server-osparc"
+    #default_host = "172.16.8.64"
     containers = {}
 
     def set_file_permissions(self, paths, username):
@@ -297,7 +297,7 @@ class OsparcBackend(DBBackendBase):
         # )
         # yield {"pid": pid}
 
-        scheduler_address = f"tls://{self.default_host}:8786"
+        scheduler_address = worker.cluster.scheduler_address
         db_address = f"{self.default_host}:8787"
         workdir = worker.cluster.state.get("workdir")
 
@@ -311,7 +311,7 @@ class OsparcBackend(DBBackendBase):
                 "GATEWAY_WORK_FOLDER": f"{workdir}",
             }
         )
-        run_on_host = True
+        run_on_host = False
         if run_on_host:
             if "PATH" in env:
                 del env["PATH"]
@@ -322,7 +322,6 @@ class OsparcBackend(DBBackendBase):
 
         container_config = {
             "Env": env_vars,
-            # "Cmd": "run",
             "Image": docker_image,
             "HostConfig": {
                 "Init": True,
@@ -334,7 +333,7 @@ class OsparcBackend(DBBackendBase):
                     f"{workdir}:{workdir}",
                     "/var/run/docker.sock:/var/run/docker.sock",
                 ],
-                # "NetworkMode": "dask-gateway_dask_net",
+                "NetworkMode": "dask-gateway_dask_net",
             },
         }
         try:
@@ -358,9 +357,7 @@ class OsparcBackend(DBBackendBase):
                     counter + counter + 1
 
                 yield {"container_id": container.id}
-                # while True:
-                #     await asyncio.sleep(2)
-
+              
         except DockerContainerError:
             self.log.exception(
                 "Error while running %s with parameters %s",
@@ -379,11 +376,6 @@ class OsparcBackend(DBBackendBase):
             self.log.warning("Container run was cancelled")
             raise
 
-        # cmd = self.get_worker_command(worker.cluster, worker.name)
-        # env = self.get_worker_env(worker.cluster)
-        # pid = await self.start_process(
-        #     worker.cluster, cmd, env, "worker-%s" % worker.name
-        # )
 
     async def _stop_container(self, container_id):
         self.log.warn("Stoppoing container %s", container_id)
