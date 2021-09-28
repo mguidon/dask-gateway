@@ -8,19 +8,20 @@ import shutil
 import signal
 import sys
 import tempfile
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
-from sqlalchemy import schema
-
-from traitlets import List, Unicode, Integer
-
-from .base import ClusterConfig
-from .db_base import DBBackendBase
-from ..traitlets import Type
 
 from aiodocker import Docker
 from aiodocker.containers import DockerContainer
 from aiodocker.exceptions import DockerContainerError, DockerError
+from aiodocker.volumes import DockerVolume
+from sqlalchemy import schema
+from sqlalchemy.sql.operators import exists
+from traitlets import Integer, List, Unicode, Bool
 
+from ..traitlets import Type
+from .base import ClusterConfig
+from .db_base import DBBackendBase
 
 __all__ = ("OsparcClusterConfig", "OsparcBackend", "UnsafeOsparcBackend")
 
@@ -140,10 +141,29 @@ class OsparcBackend(DBBackendBase):
         config=True,
     )
 
+    run_on_host = Bool(
+        False,
+        help="""
+        yada
+        """,
+        config=True,
+    )
+
+    run_in_swarm = Bool(
+        True,
+        help="""
+        yada
+        """,
+        config=True,
+    )
+
     # default_host = "dask-gateway-server-osparc"
     default_host = "0.0.0.0"
     # default_host = "172.16.8.64"
     containers = {}
+
+    #run_on_host = False
+    #run_in_swarm = True
 
     def set_file_permissions(self, paths, username):
         pwnam = getpwnam(username)
@@ -201,7 +221,7 @@ class OsparcBackend(DBBackendBase):
                 shutil.rmtree(workdir)
                 self.log.debug("Working directory %s removed", workdir)
             except Exception:  # pragma: nocover
-                self.log.warn("Failed to remove working directory %r", workdir)
+                self.log.error("Failed to remove working directory %r", workdir)
 
     def get_certs_directory(self, workdir):
         return os.path.join(workdir, ".certs")
@@ -268,8 +288,8 @@ class OsparcBackend(DBBackendBase):
         workdir = self.setup_working_directory(cluster)
         yield {"workdir": workdir}
 
-        self.log.warn(self.get_scheduler_command(cluster))
-        self.log.warn(self.get_scheduler_env(cluster))
+        self.log.info(self.get_scheduler_command(cluster))
+        self.log.info(self.get_scheduler_env(cluster))
         pid = await self.start_process(
             cluster,
             self.get_scheduler_command(cluster),
@@ -298,24 +318,23 @@ class OsparcBackend(DBBackendBase):
         cmd = self.get_worker_command(worker.cluster, worker.name)
         env = self.get_worker_env(worker.cluster)
 
-
-        run_on_host = False
-
-        if not run_on_host:
+        if not self.run_on_host:
             scheduler_url = urlsplit(worker.cluster.scheduler_address)
             port = scheduler_url.netloc.split(":")[1]
             netloc = "dask-gateway-server-osparc" + ":" + port
 
             scheduler_address = urlunsplit(scheduler_url._replace(netloc=netloc))
         else:
-            scheduler_address = worker.cluster.scheduler_address #urlsplit(worker.cluster.scheduler_address)
+            scheduler_address = (
+                worker.cluster.scheduler_address
+            )  # urlsplit(worker.cluster.scheduler_address)
             # scheduler_address =  urlunsplit(scheduler_url._replace(scheme="tcp"))
 
         db_address = f"{self.default_host}:8787"
         workdir = worker.cluster.state.get("workdir")
 
-        self.log.warn("Workdir: %s", workdir)
-        self.log.warn("scheduler_address: %s", scheduler_address)
+        self.log.info("Workdir: %s", workdir)
+        self.log.info("scheduler_address: %s", scheduler_address)
 
         env.update(
             {
@@ -325,18 +344,18 @@ class OsparcBackend(DBBackendBase):
                 "GATEWAY_WORK_FOLDER": f"{workdir}",
             }
         )
-        if run_on_host:
+        if self.run_on_host:
             if "PATH" in env:
                 del env["PATH"]
 
         docker_image = "local/dask-sidecar:production"
-        env_vars = [f"{key}={value}" for key, value in env.items()]
         workdir = worker.cluster.state.get("workdir")
 
-        use_swarm = False
+        container_config = {}
         try:
             async with Docker() as docker_client:
-                if not use_swarm:
+                if not self.run_in_swarm:
+                    env_vars = [f"{key}={value}" for key, value in env.items()]
                     container_config = {
                         "Env": env_vars,
                         "Image": docker_image,
@@ -350,13 +369,15 @@ class OsparcBackend(DBBackendBase):
                                 f"{workdir}:{workdir}",
                                 "/var/run/docker.sock:/var/run/docker.sock",
                             ],
-                            "NetworkMode": "dask-gateway_dask_net" if not run_on_host else "",
+                            "NetworkMode": "dask-gateway_dask_net"
+                            if not self.run_on_host
+                            else "",
                         },
                     }
 
                     for network_details in await docker_client.networks.list():
                         n = network_details["Name"]
-                        self.log.warn(n)
+                        self.log.info(n)
                         id = network_details["Id"]
 
                     container = await docker_client.containers.create(
@@ -373,6 +394,104 @@ class OsparcBackend(DBBackendBase):
                         counter + counter + 1
 
                     yield {"container_id": container.id}
+                else:
+                    for folder in [
+                        f"{workdir}/input",
+                        f"{workdir}/output",
+                        f"{workdir}/log",
+                    ]:
+                        p = Path(folder)
+                        p.mkdir(parents=True, exist_ok=True)
+
+                    volume_attributes = await DockerVolume(
+                        docker_client, "dask-gateway_gateway_data"
+                    ).show()
+                    vol_mount_point = volume_attributes["Mountpoint"]
+
+                    # env.update( {"GATEWAY_WORK_FOLDER": f"{vol_mount_point}/{worker.cluster.name}"})
+
+                    mounts = [
+                        # docker socket needed to use the docker api
+                        {
+                            "Source": "/var/run/docker.sock",
+                            "Target": "/var/run/docker.sock",
+                            "Type": "bind",
+                            "ReadOnly": True,
+                        },
+                        {
+                            "Source": f"{vol_mount_point}/{worker.cluster.name}/input",
+                            "Target": "/input",
+                            "Type": "bind",
+                            "ReadOnly": False,
+                        },
+                        {
+                            "Source": f"{vol_mount_point}/{worker.cluster.name}/output",
+                            "Target": "/output",
+                            "Type": "bind",
+                            "ReadOnly": False,
+                        },
+                        {
+                            "Source": f"{vol_mount_point}/{worker.cluster.name}/log",
+                            "Target": "/log",
+                            "Type": "bind",
+                            "ReadOnly": False,
+                        },
+                        {
+                            "Source": f"{vol_mount_point}/{worker.cluster.name}",
+                            "Target": f"{workdir}",
+                            "Type": "bind",
+                            "ReadOnly": False,
+                        },
+                    ]
+
+                    container_config = {
+                        "Env": env,
+                        "Image": docker_image,
+                        "Init": True,
+                        "Mounts": mounts,
+                    }
+
+                    service_name = worker.name
+                    service_parameters = {
+                        "name": service_name,
+                        "task_template": {
+                            "ContainerSpec": container_config,
+                        },
+                        "networks": ["dask-gateway_dask_net"],
+                    }
+
+                    self.log.info("Starting service %s", service_name)
+
+                    service = await docker_client.services.create(**service_parameters)
+                    self.log.info("Service %s started", service_name)
+
+                    if "ID" not in service:
+                        # error while starting service
+                        self.log.error("OOPS service not created")
+
+                    # get the full info from docker
+                    service = await docker_client.services.inspect(service["ID"])
+                    service_name = service["Spec"]["Name"]
+                    self.log.info("Waiting for service %s to start", service_name)
+                    while True:
+                        tasks = await docker_client.tasks.list(
+                            filters={"service": service_name}
+                        )
+                        if tasks and len(tasks) == 1:
+                            task = tasks[0]
+                            task_state = task["Status"]["State"]
+                            self.log.info("%s %s", service["ID"], task_state)
+                            if task_state in ("failed", "rejected"):
+                                self.log.error(
+                                    "Error while waiting for service with %s",
+                                    task["Status"],
+                                )
+                            if task_state in ("running", "complete"):
+                                break
+                        await asyncio.sleep(1)
+
+                    self.log.info("Service %s is running", worker.name)
+                    yield {"service_id": service["ID"]}
 
         except DockerContainerError:
             self.log.exception(
@@ -389,29 +508,45 @@ class OsparcBackend(DBBackendBase):
             )
             raise
         except asyncio.CancelledError:
-            self.log.warning("Container run was cancelled")
+            self.log.warn("Container run was cancelled")
             raise
 
-    async def _stop_container(self, container_id):
-        self.log.warn("Stoppoing container %s", container_id)
-        try:
-            async with Docker() as docker_client:
-                container = await docker_client.containers.get(container_id)
-                await container.stop()
-                await container.delete()
-
-        except DockerContainerError:
-            self.log.exception(
-                "Error while stopping container with id %s", container_id
-            )
-
-    async def do_stop_worker(self, worker):
+    async def _stop_container(self, worker):
         container_id = worker.state.get("container_id")
         if container_id is not None:
-            await self._stop_container(container_id)
+            self.log.info("Stopping container %s", container_id)
+            try:
+                async with Docker() as docker_client:
+                    container = await docker_client.containers.get(container_id)
+                    await container.stop()
+                    await container.delete()
 
-    async def _check_container_status(self, o):
-        container_id = o.state.get("container_id")
+            except DockerContainerError:
+                self.log.exception(
+                    "Error while stopping container with id %s", container_id
+                )
+
+    async def _stop_service(self, worker):
+        service_id = worker.state.get("service_id")
+        if service_id is not None:
+            self.log.info("Stopping service %s", service_id)
+            try:
+                async with Docker() as docker_client:
+                    await docker_client.services.delete(service_id)
+
+            except DockerContainerError:
+                self.log.exception(
+                    "Error while stopping service with id %s", service_id
+                )
+
+    async def do_stop_worker(self, worker):
+        if self.run_in_swarm:
+            await self._stop_service(worker)
+        else:
+            await self._stop_container(worker)
+
+    async def _check_container_status(self, worker):
+        container_id = worker.state.get("container_id")
         if container_id:
             try:
                 async with Docker() as docker_client:
@@ -425,11 +560,37 @@ class OsparcBackend(DBBackendBase):
 
         return False
 
+    async def _check_service_status(self, worker):
+        service_id = worker.state.get("service_id")
+        if service_id:
+            try:
+                async with Docker() as docker_client:
+                    service = await docker_client.services.inspect(service_id)
+                    if service:
+                        service_name = service["Spec"]["Name"]
+                        tasks = await docker_client.tasks.list(
+                            filters={"service": service_name}
+                        )
+                        if tasks and len(tasks) == 1:
+                            service_state = tasks[0]["Status"]["State"]
+                            self.log.log(
+                                "State of %s  is %s", service_name, service_state
+                            )
+                            return service_state == "running"
+            except DockerContainerError:
+                self.log.exception(
+                    "Error while checking container with id %s", service_id
+                )
+
+        return False
+
     async def do_check_workers(self, workers):
         ok = [False] * len(workers)
         for i, w in enumerate(workers):
-            ok[i] = await self._check_container_status(w)
-            self.log.warn("Statussssssssssssssssssss %s", ok[i])
+            if self.run_in_swarm:
+                ok[i] = await self._check_service_status(w)
+            else:
+                ok[i] = await self._check_container_status(w)
 
         return ok
 

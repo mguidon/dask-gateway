@@ -94,6 +94,7 @@ up-swarm:  .init-swarm ## run as stack in swarm
 	export BUILD_TARGET=production && docker stack deploy --with-registry-auth -c docker-compose-swarm.yml dask-gateway
 
 leave-swarm:
+	docker stack rm dask-gateway
 	docker swarm leave -f
 	
 .PHONY: help

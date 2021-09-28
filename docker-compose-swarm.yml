@@ -7,11 +7,20 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./sample.py:/home/scu/sample.py
-      - /tmp/gateway:/tmp/gateway
+      - gateway_data:/tmp/gateway
     networks:
        - dask_net
     environment:
       - GATEWAY_WORK_FOLDER=/tmp/gateway
+
+  portainer:
+    image: portainer/portainer-ce
+    ports:
+      - "9000:9000"
+    command: -H unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
 
 networks:
   dask_net:
@@ -21,3 +30,7 @@ networks:
       driver: default
       config:
         - subnet: "172.9.0.0/16"
+
+volumes:
+  gateway_data: {}
+  portainer_data: {}
